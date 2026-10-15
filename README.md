@@ -27,7 +27,45 @@ ctest --test-dir build --output-on-failure   # run the tests
 
 # Same, drawing the 8x8 tile map (. unchanged, ~ noise only, X changed)
 ./build/ivc_compare --map samples/00_original.png samples/03_small_region_edit.png
+
+# Where two versions differ: IDs, exact and visible changes, difference image
+./build/ivc_diff samples/00_original.png samples/03_small_region_edit.png -o diff.png
 ```
+
+![Difference image for the window edit](docs/diff_window_edit.png)
+
+*`ivc_diff` on `03_small_region_edit.png`: the painted-over window is the
+only change, outlined in yellow.*
+
+## Image ID
+
+Every image is identified by the **SHA-256 of its decoded pixels**
+(`exact_hash`, see below). Same pixels → same ID, whatever the file format,
+compression or metadata.
+
+## Differences: SSIM
+
+`diff_images` (`src/diff.hpp`) shows *where* two versions differ:
+
+1. **Align**: find the orientation with `compare_images` and turn the image
+   back; if the sizes differ, compare at the smaller one.
+2. **Exact differences**: with equal sizes, every pixel is compared, so even a
+   single changed value is counted and located.
+3. **Visible differences**: SSIM (structural similarity, `src/ssim.hpp`), which
+   compares local brightness, contrast and structure around every pixel. It is
+   built from Gaussian convolutions (`src/convolution.hpp`) and matches
+   scikit-image to about 0.001. It is computed at two scales and the worse
+   value kept at each point:
+   - brightness at ½ size: changes of shape, texture or brightness;
+   - each colour channel at ¼ size: changes of colour.
+
+   At these scales pixel noise (JPEG artifacts, sensor noise) disappears while
+   real edits remain: on the samples, JPEG stays above SSIM 0.84 everywhere
+   while the window edit drops to −0.01. Points below 0.6 are grouped into
+   changed regions.
+
+Known limitation: crops and arbitrary rotations need an alignment step
+(phase correlation / Fourier–Mellin), not implemented yet.
 
 ## Hashes
 
