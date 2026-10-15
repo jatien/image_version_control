@@ -54,7 +54,8 @@ struct ImageDiff {
 // Changed when the combined SSIM is below `threshold`. On the samples,
 // invisible changes (JPEG, resize, brightness +5) stay above 0.84 while the
 // window edit drops to about -0.01.
-ImageDiff diff_images(const Image& reference, const Image& image, float threshold = 0.6f);
+ImageDiff diff_images(const Image& reference, const Image& image, float threshold = 0.6f,
+                      bool search_orientations = true);
 
 // A picture of the difference, at the reference's size: the reference in
 // dimmed grey, changes tinted red by how much they differ, and each region

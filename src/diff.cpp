@@ -83,11 +83,12 @@ std::vector<Region> find_regions(const GrayImage& map, float threshold, int scal
 
 }  // namespace
 
-ImageDiff diff_images(const Image& reference, const Image& image, float threshold) {
+ImageDiff diff_images(const Image& reference, const Image& image, float threshold,
+                      bool search_orientations) {
     ImageDiff d;
     d.reference_id = exact_hash(reference);
     d.image_id = exact_hash(image);
-    d.comparison = compare_images(reference, image);
+    d.comparison = compare_images(reference, image, search_orientations);
 
     // Turn the image back to the reference's orientation.
     const Image aligned = apply_orientation(image, inverse(d.comparison.orientation));

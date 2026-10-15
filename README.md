@@ -27,10 +27,11 @@ ivc commit -m "First version"
 ivc status                                # modified  photo.png
 ivc diff photo.png -o diff.png            # what changed, and where
 ivc add photo.png
-ivc commit -m "Remove the window" --edit "brush x=164 y=160 w=16 h=16"
+ivc commit -m "Rotate" --op "rotate degrees=90" --tool "GIMP 2.10.36"
 
 ivc log                                   # history, newest first
 ivc show HEAD~1                           # one commit in full
+ivc verify                                # check the whole history
 
 ivc checkout HEAD~1                       # go back to the previous version
 ivc checkout main                         # and forward again
@@ -43,23 +44,76 @@ ivc restore photo.png --from HEAD~2       # bring back one file
 its first 4+ characters, `HEAD` (the current commit), or `<revision>~<n>`
 for *n* commits back.
 
-Example `ivc log` entry, for a photo rotated in an editor:
+## Declared edits, verified against the pixels
 
+An editor (or you) can declare **which operations** produced each new version.
+`ivc` records them in the commit and **checks them against the pixels**:
+
+```bash
+ivc commit -m "Rotate" --op "rotate degrees=90" --tool "GIMP 2.10.36"
+ivc commit -m "Retouch" --op "drawing region=160,76,16,16"
+ivc commit -m "Editor session" --ops-file edits.ops   # one operation per line
+ivc operations                                        # the known operations
 ```
-commit 76573e3d (HEAD -> main)
-author  Javi
-date    2026-10-15T21:35:35Z
 
-    Rotate
+An operation is an action plus `key=value` parameters; add `file=<path>` when
+more than one image changed, and `region=x,y,width,height` to say where it
+acted. Action names map to [C2PA](https://c2pa.org) actions where one exists
+(`rotate` → `c2pa.orientation`, `crop` → `c2pa.cropped`, ...), including
+`ai_edit` and `ai_generate` for generative AI. Each operation gets an ID: the
+SHA-256 of its file, action, parameters and tool.
 
-    edit  rotate 90
-    modified  photo.png   (similarity 1.000, detected rotated 90, pixels 0 changed, visible 0 region(s))
+Each changed image gets one of these results:
+
+| Result | Meaning |
+|---|---|
+| **VERIFIED** | `ivc` replayed the operations itself and got exactly the committed pixels |
+| **CONSISTENT** | same as the replay, apart from invisible differences (another program's rounding, JPEG) |
+| **DECLARED** | changes `ivc` cannot replay (filters, brushes, AI), all inside the regions they declared |
+| **MISMATCH** | the image does **not** match what was declared: undeclared regions are listed |
+| **UNDECLARED** | the image changed but nothing was declared |
+
+Replayable today: `rotate`, `flip`, `crop`, `resize`, `brightness`,
+`grayscale`. The check uses the SSIM difference *without* searching for
+rotations, so an undeclared rotation cannot hide.
+
+What this can and cannot do: an editor that declares nothing leaves only
+UNDECLARED changes, and a filter declared without a region covers the whole
+image. Claims are checked, not trusted: a false claim is a MISMATCH even if
+the commit is signed.
+
+## Signed commits and `ivc verify`
+
+```bash
+ivc key generate "Javi"          # once: your Ed25519 key, in ~/.config/ivc
+ivc trust --me                   # in each repository: trust your own key
+ivc trust <public-key> "Name"    # trust someone else's
+ivc verify                       # check the history
+ivc verify --strict              # also fail unsigned or untrusted commits
 ```
 
-The change was *identified* as a pure rotation: after turning it back, not a
-single pixel differs.
+With a key, every commit is signed automatically (`--no-sign` to skip). The
+signature covers every byte of the commit except the signature line itself,
+including the declared operations and their check results. Signatures use
+[Monocypher](https://monocypher.org) (`third_party/monocypher`, audited,
+public domain), checked against the RFC 8032 test vectors; the signature
+algorithm is deliberately not home-made.
 
-### What is stored
+`ivc verify` walks the history and reports, per commit:
+
+- the commit was **not altered** (its ID is the SHA-256 of its text);
+- the **signature** is valid, and whether the key is trusted here;
+- every **stored file** still matches its file ID and image ID;
+- every **declared operation** record matches its ID, and the operations are
+  **re-checked against the pixels** (MISMATCH is a problem).
+
+It exits with status 1 when there is a problem. A signature proves *who*
+made a commit and that it was not changed; it does not prove the edits are
+true. That is what the pixel checks are for. Someone rewriting history could
+drop the signatures entirely, so use `--strict` when every commit is
+expected to be signed.
+
+## What is stored
 
 Everything lives in `.ivc/` at the root of the folder:
 
@@ -70,6 +124,7 @@ Everything lives in `.ivc/` at the root of the folder:
 | `index` | the staging area: the files the next commit will contain |
 | `objects/files/<id>` | the original bytes of every version of every file, named by their SHA-256 |
 | `objects/commits/<id>` | the commits, as text, named by the SHA-256 of that text |
+| `trusted_keys` | public keys whose signatures this repository trusts |
 
 Each file version has two IDs: the **file ID** (SHA-256 of its bytes), used
 to restore it exactly, and the **image ID** (SHA-256 of its pixels), its
@@ -77,32 +132,41 @@ identity whatever the format or metadata. A commit is a readable text file:
 
 ```
 ivc-commit 1
-parent 40bd5a83eecb60ca2a1256723891681073234b61aa49c602d65f65273feeaf29
+parent 3e71d236e64e4fe3971cab55e4ab24dd21f4700e7e5186da5373023e6f4744be
 author Javi
-date 2026-10-15T21:35:35Z
-edit rotate 90
-file f656ef81…c182074e 47e2d2c8…7127c257 holidays/sunset.png
-file f2d31b4a…bfae5251 1ad8892e…2c6d2be8 photo.png
+date 2026-10-15T22:17:33Z
+signer 6bf637d396b5479e51cb782879cbe1ba164025e3c8ebb52718ebe6da38c59465 Javi
+op photo.png
+  action rotate
+  params degrees=90
+  tool GIMP 2.10.36
+  c2pa c2pa.orientation
+  id eeae8e6c5a8afcfe57f763782a4b7e32db8e7d4aaa592e958bfa508d770694df
+file 5c35b27d…dd89b54891 c6fdc93b…6c343a1a5d photo.png
 change modified photo.png
   similarity 1.000
   detected rotated 90
   pixels 0 changed
   visible 0 region(s)
+  check VERIFIED replaying 1 operation(s) reproduces the image exactly
+signature 1beb9420…10c5cbe0b
 
 Rotate
 ```
 
+- `signer` / `signature`: who signed, and the Ed25519 signature of everything
+  else.
+- `op <path>`: a declared operation, with its C2PA action and ID.
 - `file <image id> <file id> <path>`: every file in this version.
-- `change <kind> <path>`: what happened, with kind `added`, `modified`,
-  `replaced` (no longer similar), `metadata` (same pixels, different bytes)
-  or `deleted`; the indented lines are what the comparison measured:
-  similarity, detected rotation, mirror or resize, changed pixels and regions.
-- `edit <tool key> <parameters>`: written by an editor (`--edit`) to record
-  which tool made the change. Unknown lines are ignored, so new fields can be
-  added later without breaking old repositories.
+- `change <kind> <path>`: what happened (`added`, `modified`, `replaced`,
+  `metadata`, `deleted`); the indented lines are what the comparison measured,
+  and `check` is the result of the declared operations against the pixels.
 
-Not yet: merging branches, and storing only the changed parts of an image
-(each version currently stores the full file).
+Unknown lines are ignored, so new fields can be added later without breaking
+old repositories.
+
+Not yet: merging branches, storing only the changed parts of an image (each
+version currently stores the full file), and import/export of C2PA manifests.
 
 ## Inspection tools
 

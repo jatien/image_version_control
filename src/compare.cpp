@@ -17,7 +17,8 @@ static GrayImage thumbnail(const Image& img) {
     return resize_area(to_gray(img), kThumbnailSize, kThumbnailSize);
 }
 
-Comparison compare_images(const Image& reference, const Image& image) {
+Comparison compare_images(const Image& reference, const Image& image,
+                          bool search_orientations) {
     Comparison result;
 
     if (exact_hash(reference) == exact_hash(image)) {
@@ -38,6 +39,7 @@ Comparison compare_images(const Image& reference, const Image& image) {
             result.similarity = s;
             result.orientation = inverse(undo);
         }
+        if (!search_orientations) break;  // Identity is first
     }
 
     result.verdict = result.similarity >= kSimilarThreshold ? Verdict::Similar
