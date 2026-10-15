@@ -20,6 +20,7 @@ add_library(ivc_core
   src/stb_impl.cpp
   src/sha256.cpp
   src/image_hash.cpp
+  src/similarity_hash.cpp
 )
 target_include_directories(ivc_core PUBLIC src third_party)
 target_compile_options(ivc_core PRIVATE ${IVC_WARNINGS})
@@ -33,6 +34,10 @@ add_executable(ivc_hash src/hash_main.cpp)
 target_link_libraries(ivc_hash PRIVATE ivc_core)
 target_compile_options(ivc_hash PRIVATE ${IVC_WARNINGS})
 
+add_executable(ivc_compare src/compare_main.cpp)
+target_link_libraries(ivc_compare PRIVATE ivc_core)
+target_compile_options(ivc_compare PRIVATE ${IVC_WARNINGS})
+
 # Tests:  ctest --test-dir build --output-on-failure
 enable_testing()
 add_executable(test_hash tests/test_hash.cpp)
@@ -40,3 +45,9 @@ target_link_libraries(test_hash PRIVATE ivc_core)
 target_compile_options(test_hash PRIVATE ${IVC_WARNINGS})
 target_compile_definitions(test_hash PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
 add_test(NAME hash COMMAND test_hash)
+
+add_executable(test_similarity tests/test_similarity.cpp)
+target_link_libraries(test_similarity PRIVATE ivc_core)
+target_compile_options(test_similarity PRIVATE ${IVC_WARNINGS})
+target_compile_definitions(test_similarity PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
+add_test(NAME similarity COMMAND test_similarity)
