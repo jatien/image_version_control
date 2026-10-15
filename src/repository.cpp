@@ -126,38 +126,87 @@ bool Repository::is_image_path(const fs::path& p) {
 
 // ---------------------------------------------------------------- commits
 
-std::string Commit::serialize() const {
+std::string Commit::serialize(bool with_signature) const {
     std::ostringstream out;
     out << "ivc-commit 1\n";
     for (const auto& p : parents) out << "parent " << p << '\n';
     out << "author " << author << '\n';
     out << "date " << date << '\n';
+    if (!signer_key.empty()) out << "signer " << signer_key << ' ' << signer_name << '\n';
     for (const auto& e : edits) out << "edit " << e << '\n';
+    for (const Operation& op : operations) {
+        out << "op " << op.file << '\n';
+        out << "  action " << op.action << '\n';
+        const std::string canon = op.canonical();
+        if (canon.size() > op.action.size()) out << "  params" << canon.substr(op.action.size()) << '\n';
+        if (!op.tool.empty()) out << "  tool " << op.tool << '\n';
+        if (const ActionSpec* spec = find_action(op.action); spec && !spec->c2pa.empty())
+            out << "  c2pa " << spec->c2pa << '\n';
+        out << "  id " << op.id() << '\n';
+    }
     for (const auto& [path, f] : files)
         out << "file " << f.image_id << ' ' << f.file_id << ' ' << path << '\n';
     for (const auto& c : changes) {
         out << "change " << c.kind << ' ' << c.path << '\n';
         for (const auto& d : c.details) out << "  " << d << '\n';
     }
+    if (with_signature && !signature.empty()) out << "signature " << signature << '\n';
     out << '\n' << message;
     if (message.empty() || message.back() != '\n') out << '\n';
     return out.str();
 }
 
+std::string Commit::signed_payload() const {
+    // Remove the one line "signature ...\n" from the header; everything else
+    // is signed exactly as stored.
+    const std::size_t header_end = raw.find("\n\n");
+    std::size_t pos = raw.find("\nsignature ");
+    if (pos == std::string::npos || pos > header_end) return raw;
+    pos += 1;
+    const std::size_t end = raw.find('\n', pos);
+    return raw.substr(0, pos) + raw.substr(end + 1);
+}
+
 Commit Commit::parse(const std::string& id, const std::string& text) {
     Commit c;
     c.id = id;
+    c.raw = text;
     std::istringstream in(text);
     std::string line;
     if (!std::getline(in, line) || line != "ivc-commit 1")
         throw std::runtime_error("commit " + id + " has an unknown format");
 
+    enum class Block { None, Op, Change } block = Block::None;
+    auto corrupt = [&] { return std::runtime_error("commit " + id + " is corrupt"); };
+
     while (std::getline(in, line) && !line.empty()) {
         if (starts_with(line, "  ")) {
-            if (c.changes.empty()) throw std::runtime_error("commit " + id + " is corrupt");
-            c.changes.back().details.push_back(line.substr(2));
+            const std::string inner = line.substr(2);
+            if (block == Block::Change) {
+                c.changes.back().details.push_back(inner);
+            } else if (block == Block::Op) {
+                Operation& op = c.operations.back();
+                const std::size_t sp = inner.find(' ');
+                const std::string key = inner.substr(0, sp);
+                const std::string rest = sp == std::string::npos ? "" : inner.substr(sp + 1);
+                if (key == "action") {
+                    op.action = rest;
+                } else if (key == "params") {
+                    for (const std::string& w : split_words(rest)) {
+                        const std::size_t eq = w.find('=');
+                        if (eq == std::string::npos) throw corrupt();
+                        op.params[w.substr(0, eq)] = w.substr(eq + 1);
+                    }
+                } else if (key == "tool") {
+                    op.tool = rest;
+                }
+                // c2pa and id are derived from the rest; verify recomputes them.
+            } else {
+                throw corrupt();
+            }
             continue;
         }
+        block = Block::None;
         const std::size_t sp = line.find(' ');
         const std::string key = line.substr(0, sp);
         const std::string rest = sp == std::string::npos ? "" : line.substr(sp + 1);
@@ -168,19 +217,30 @@ Commit Commit::parse(const std::string& id, const std::string& text) {
             c.author = rest;
         } else if (key == "date") {
             c.date = rest;
+        } else if (key == "signer") {
+            const std::size_t a = rest.find(' ');
+            c.signer_key = rest.substr(0, a);
+            c.signer_name = a == std::string::npos ? "" : rest.substr(a + 1);
+        } else if (key == "signature") {
+            c.signature = rest;
         } else if (key == "edit") {
             c.edits.push_back(rest);
+        } else if (key == "op") {
+            Operation op;
+            op.file = rest;
+            c.operations.push_back(op);
+            block = Block::Op;
         } else if (key == "file") {
             // file <image id> <file id> <path, may contain spaces>
             const std::size_t a = rest.find(' ');
             const std::size_t b = rest.find(' ', a + 1);
-            if (a == std::string::npos || b == std::string::npos)
-                throw std::runtime_error("commit " + id + " is corrupt");
+            if (a == std::string::npos || b == std::string::npos) throw corrupt();
             c.files[rest.substr(b + 1)] = {rest.substr(0, a), rest.substr(a + 1, b - a - 1)};
         } else if (key == "change") {
             const std::size_t a = rest.find(' ');
-            if (a == std::string::npos) throw std::runtime_error("commit " + id + " is corrupt");
+            if (a == std::string::npos) throw corrupt();
             c.changes.push_back({rest.substr(0, a), rest.substr(a + 1), {}});
+            block = Block::Change;
         }
         // Unknown keys are ignored, so later versions can add fields.
     }
@@ -512,8 +572,15 @@ Status Repository::status() const {
 
 // ---------------------------------------------------------------- committing
 
-std::vector<Change> Repository::describe_changes(const Snapshot& before,
-                                                  const Snapshot& after) const {
+std::vector<Change> Repository::describe_changes(const Snapshot& before, const Snapshot& after,
+                                                  const std::vector<Operation>& ops) const {
+    auto ops_for = [&](const std::string& path) {
+        std::vector<Operation> out;
+        for (const Operation& op : ops)
+            if (op.file == path) out.push_back(op);
+        return out;
+    };
+
     std::vector<Change> changes;
     std::set<std::string> paths;
     for (const auto& kv : before) paths.insert(kv.first);
@@ -524,7 +591,12 @@ std::vector<Change> Repository::describe_changes(const Snapshot& before,
 
         if (b == before.end()) {
             const Image img = load_image(file_object(a->second.file_id).string());
-            changes.push_back({"added", path, {"size " + size_text(img.width, img.height)}});
+            Change ch{"added", path, {"size " + size_text(img.width, img.height)}};
+            if (const auto declared = ops_for(path); !declared.empty())
+                ch.details.push_back("check DECLARED new image: " +
+                                     std::to_string(declared.size()) +
+                                     " operation(s) recorded, nothing earlier to compare with");
+            changes.push_back(ch);
             continue;
         }
         if (a == after.end()) {
@@ -568,15 +640,19 @@ std::vector<Change> Repository::describe_changes(const Snapshot& before,
                 ch.details.push_back("region " + box_text(d.regions[i].box) +
                                      fmt(" min-ssim %.2f", d.regions[i].min_ssim));
         }
+
+        // The declared operations against the pixels.
+        const OperationCheck oc = check_operations(old_img, new_img, ops_for(path));
+        ch.details.push_back(std::string("check ") + check_name(oc.result) + " " + oc.summary);
+        for (const auto& det : oc.details) ch.details.push_back("check-detail " + det);
         changes.push_back(ch);
     }
     return changes;
 }
 
-std::string Repository::commit(const std::string& message, const std::vector<std::string>& edits) {
+std::string Repository::commit(const std::string& message, std::vector<Operation> operations,
+                               const SigningKey* key) {
     if (trim(message).empty()) throw std::runtime_error("a commit needs a message (-m \"...\")");
-    for (const auto& e : edits)
-        if (e.find('\n') != std::string::npos) throw std::runtime_error("edit keys must be one line");
 
     const auto parent = head_commit();
     const Snapshot before = parent ? read_commit(*parent).files : Snapshot{};
@@ -584,14 +660,46 @@ std::string Repository::commit(const std::string& message, const std::vector<std
     if (index == before)
         throw std::runtime_error("nothing to commit (stage changes with 'ivc add')");
 
+    // Images whose pixels changed (operations can only describe those).
+    std::vector<std::string> changed;
+    for (const auto& [path, f] : index) {
+        const auto b = before.find(path);
+        if (b == before.end() || b->second.image_id != f.image_id) changed.push_back(path);
+    }
+
+    for (Operation& op : operations) {
+        if (op.file.empty()) {
+            if (changed.size() != 1)
+                throw std::runtime_error("operation '" + op.canonical() +
+                                         "' needs file=<path>: " + std::to_string(changed.size()) +
+                                         " images changed in this commit");
+            op.file = changed[0];
+        } else {
+            op.file = to_repo_path(root_ / op.file);
+        }
+        if (std::find(changed.begin(), changed.end(), op.file) == changed.end())
+            throw std::runtime_error("operation '" + op.canonical() + "' is for " + op.file +
+                                     ", whose pixels did not change in this commit");
+        try {
+            validate_operation(op);
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error(std::string("invalid operation: ") + e.what());
+        }
+    }
+
     Commit c;
     if (parent) c.parents.push_back(*parent);
     c.author = author_name();
     c.date = now_utc();
-    c.edits = edits;
+    c.operations = operations;
     c.files = index;
-    c.changes = describe_changes(before, index);
+    c.changes = describe_changes(before, index, operations);
     c.message = trim(message);
+    if (key) {
+        c.signer_key = key->public_hex();
+        c.signer_name = key->name;
+        c.signature = sign_message(*key, c.serialize(false));
+    }
     const std::string id = write_commit(c);
 
     if (auto branch = current_branch())
@@ -599,6 +707,146 @@ std::string Repository::commit(const std::string& message, const std::vector<std
     else
         set_head_detached(id);
     return id;
+}
+
+// ---------------------------------------------------------------- trust and verification
+
+std::map<std::string, std::string> Repository::trusted_keys() const {
+    std::map<std::string, std::string> keys;
+    const fs::path p = ivc() / "trusted_keys";
+    if (!fs::exists(p)) return keys;
+    std::istringstream in(read_text(p));
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const std::size_t sp = line.find(' ');
+        keys[line.substr(0, sp)] = sp == std::string::npos ? "" : line.substr(sp + 1);
+    }
+    return keys;
+}
+
+void Repository::trust_key(const std::string& public_hex, const std::string& name) {
+    uint8_t check[32];
+    hex_to_bytes(public_hex, check, 32);  // throws unless 64 hex digits
+    if (name.empty() || name.find('\n') != std::string::npos)
+        throw std::runtime_error("a trusted key needs a one-line name");
+    auto keys = trusted_keys();
+    keys[public_hex] = name;
+    std::ostringstream out;
+    out << "# Public keys whose commit signatures this repository trusts.\n";
+    for (const auto& [k, n] : keys) out << k << ' ' << n << '\n';
+    write_text(ivc() / "trusted_keys", out.str());
+}
+
+std::vector<CommitReport> Repository::verify(const std::string& revision) const {
+    std::vector<CommitReport> reports;
+    if (revision == "HEAD" && !head_commit()) return reports;
+
+    const auto trusted = trusted_keys();
+    std::map<std::string, std::string> blob_ok;  // file id -> problem ("" if fine)
+
+    auto check_blob = [&](const std::string& path, const FileEntry& f) -> std::string {
+        if (auto it = blob_ok.find(f.file_id); it != blob_ok.end()) return it->second;
+        std::string problem;
+        const fs::path blob = file_object(f.file_id);
+        if (!fs::exists(blob)) {
+            problem = path + ": stored file is missing";
+        } else if (file_sha256(blob) != f.file_id) {
+            problem = path + ": stored file was altered (its bytes no longer match its ID)";
+        } else {
+            try {
+                if (to_hex(exact_hash(load_image(blob.string()))) != f.image_id)
+                    problem = path + ": pixels do not match the recorded image ID";
+            } catch (const std::exception&) {
+                problem = path + ": stored file is not a readable image";
+            }
+        }
+        blob_ok[f.file_id] = problem;
+        return problem;
+    };
+
+    std::string id = resolve(revision);
+    while (true) {
+        CommitReport r;
+        r.id = id;
+        const fs::path cp = ivc() / "objects" / "commits" / id;
+        if (!fs::exists(cp)) {
+            r.problems.push_back("commit is missing");
+            reports.push_back(r);
+            break;
+        }
+        const std::string text = read_text(cp);
+
+        // 1. The commit is exactly what was written: its ID is its hash.
+        if (to_hex(Sha256::hash(text)) != id)
+            r.problems.push_back("commit was altered: its content no longer matches its ID");
+        Commit c;
+        try {
+            c = Commit::parse(id, text);
+        } catch (const std::exception& e) {
+            r.problems.push_back(e.what());
+            reports.push_back(r);
+            break;
+        }
+
+        // 2. Signature.
+        if (c.signature.empty()) {
+            r.warnings.push_back("not signed");
+        } else if (!verify_signature(c.signer_key, c.signature, c.signed_payload())) {
+            r.problems.push_back("signature is INVALID: the commit was changed after signing, "
+                                 "or not signed by the key it names");
+        } else if (auto t = trusted.find(c.signer_key); t != trusted.end()) {
+            r.notes.push_back("signed by " + t->second + " (trusted key)");
+        } else {
+            r.warnings.push_back("validly signed by '" + c.signer_name +
+                                 "', but that key is not trusted here (ivc trust ...)");
+        }
+
+        // 3. Stored files.
+        for (const auto& [path, f] : c.files)
+            if (std::string p = check_blob(path, f); !p.empty()) r.problems.push_back(p);
+
+        // 4. Declared operations: records intact, and re-checked against the pixels.
+        for (const Operation& op : c.operations) {
+            const std::string want = "  id " + op.id() + "\n";
+            const std::size_t at = text.find("op " + op.file + "\n");
+            if (at == std::string::npos || text.find(want, at) == std::string::npos)
+                r.problems.push_back(op.file + ": operation record '" + op.canonical() +
+                                     "' does not match its ID");
+        }
+        Snapshot before;
+        if (!c.parents.empty() && fs::exists(ivc() / "objects" / "commits" / c.parents[0])) {
+            try {
+                before = read_commit(c.parents[0]).files;
+            } catch (const std::exception&) {
+            }
+        }
+        for (const auto& [path, f] : c.files) {
+            const auto b = before.find(path);
+            if (b == before.end() || b->second.image_id == f.image_id) continue;
+            if (!check_blob(path, f).empty() || !check_blob(path, b->second).empty()) continue;
+            std::vector<Operation> ops;
+            for (const Operation& op : c.operations)
+                if (op.file == path) ops.push_back(op);
+            const OperationCheck oc =
+                check_operations(load_image(file_object(b->second.file_id).string()),
+                                 load_image(file_object(f.file_id).string()), ops);
+            const std::string line = path + ": " + check_name(oc.result) + " " + oc.summary;
+            if (oc.result == CheckResult::Mismatch) {
+                r.problems.push_back(line);
+                for (const auto& det : oc.details) r.problems.push_back("    " + det);
+            } else if (oc.result == CheckResult::Undeclared || oc.result == CheckResult::Declared) {
+                r.warnings.push_back(line);
+            } else {
+                r.notes.push_back(line);
+            }
+        }
+
+        reports.push_back(r);
+        if (c.parents.empty()) break;
+        id = c.parents[0];
+    }
+    return reports;
 }
 
 // ---------------------------------------------------------------- moving around

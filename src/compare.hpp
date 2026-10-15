@@ -37,6 +37,10 @@ struct Comparison {
     double similarity = 0.0;  // thumbnail SSIM after turning the image back, -1..1
 };
 
-Comparison compare_images(const Image& reference, const Image& image);
+// With search_orientations = false, only the image as it is is compared
+// (used when checking declared edits, where an undeclared rotation must not
+// be silently turned back).
+Comparison compare_images(const Image& reference, const Image& image,
+                          bool search_orientations = true);
 
 const char* verdict_name(Verdict v);

@@ -11,7 +11,11 @@
 #include "diff.hpp"
 #include "image.hpp"
 #include "orientation.hpp"
+#include <fstream>
+
+#include "operations.hpp"
 #include "repository.hpp"
+#include "signing.hpp"
 
 namespace {
 
@@ -24,9 +28,11 @@ Record changes
   ivc status                        what changed since the last commit
   ivc add <file|folder>...          stage image files for the next commit
   ivc rm [--keep] <file>...         stop tracking files (--keep: leave them on disk)
-  ivc commit -m "message" [--edit "<tool> <params>"]...
-                                    record the staged files; --edit records
-                                    which editor tool made the change
+  ivc commit -m "message" [--op "<operation>"]... [--ops-file <file>]
+             [--tool "<editor and version>"] [--no-sign]
+                                    record the staged files, with the edit
+                                    operations that produced them (see below);
+                                    signed automatically if you have a key
 
 History and differences
   ivc log [revision]                list commits, newest first
@@ -43,6 +49,24 @@ Go back and forth
   ivc branch                        list branches
   ivc branch <name> [revision]      create a branch
   ivc branch -d <name>              delete a branch
+
+Edit operations and verification
+  ivc operations                    list the known operations
+  ivc verify [--strict] [revision]  check the history: commits and files not
+                                    altered, signatures, and every declared
+                                    operation against the pixels; --strict also
+                                    fails unsigned or untrusted commits
+  ivc key generate "<name>"         create your signing key (Ed25519)
+  ivc key show                      print your public key
+  ivc trust <public-key> "<name>"   trust a key's signatures in this repository
+  ivc trust --me                    trust your own key
+  ivc trust                         list trusted keys
+
+An operation is an action and key=value parameters, e.g.
+  --op "rotate degrees=90"   --op "filter name=sharpen region=10,10,64,64"
+add file=<path> when more than one image changed. An ops file has one
+operation per line ('#' comments; a line "tool <name>" sets the tool for
+the lines after it).
 
 Revisions: a branch name, a commit ID or its first 4+ characters, HEAD
 (the current commit), and <revision>~<n> for n commits back, e.g. HEAD~2.
@@ -68,7 +92,7 @@ void print_change_summary(const Change& c) {
     // Only the one-line facts; regions are listed by "ivc show".
     bool first = true;
     for (const std::string& d : c.details) {
-        if (d.rfind("region ", 0) == 0) continue;
+        if (d.rfind("region ", 0) == 0 || d.rfind("check-detail ", 0) == 0) continue;
         std::cout << (first ? "   (" : ", ") << d;
         first = false;
     }
@@ -91,8 +115,10 @@ void print_commit_header(const Repository& repo, const Commit& c,
         for (const auto& p : c.parents) std::cout << ' ' << short_id(p);
         std::cout << '\n';
     }
-    std::cout << "author  " << c.author << "\ndate    " << c.date << "\n\n    " << c.message
-              << "\n\n";
+    std::cout << "author  " << c.author << "\ndate    " << c.date << '\n';
+    if (!c.signer_key.empty())
+        std::cout << "signed  " << c.signer_name << " (" << c.signer_key.substr(0, 16) << "...)\n";
+    std::cout << "\n    " << c.message << "\n\n";
     (void)repo;
 }
 
@@ -151,22 +177,85 @@ int cmd_status(Repository& repo) {
     return 0;
 }
 
+void print_operation(const Operation& op) {
+    std::cout << "    op  " << op.canonical() << "   (" << op.file;
+    if (!op.tool.empty()) std::cout << ", " << op.tool;
+    std::cout << ")\n";
+}
+
+std::vector<Operation> read_ops_file(const std::string& path, const std::string& default_tool) {
+    std::ifstream in(path);
+    if (!in) throw std::runtime_error("cannot read " + path);
+    std::vector<Operation> ops;
+    std::string line, tool = default_tool;
+    int n = 0;
+    while (std::getline(in, line)) {
+        ++n;
+        const auto first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos || line[first] == '#') continue;
+        line = line.substr(first);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.rfind("tool ", 0) == 0) {
+            tool = line.substr(5);
+            continue;
+        }
+        try {
+            Operation op = parse_operation(line);
+            op.tool = tool;
+            ops.push_back(op);
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error(path + ":" + std::to_string(n) + ": " + e.what());
+        }
+    }
+    return ops;
+}
+
 int cmd_commit(Repository& repo, const std::vector<std::string>& args) {
-    std::string message;
-    std::vector<std::string> edits;
+    std::string message, tool;
+    std::vector<std::string> op_texts, ops_files;
+    bool sign = true;
     for (std::size_t i = 0; i < args.size(); ++i) {
         if ((args[i] == "-m" || args[i] == "--message") && i + 1 < args.size())
             message = args[++i];
-        else if (args[i] == "--edit" && i + 1 < args.size())
-            edits.push_back(args[++i]);
+        else if (args[i] == "--op" && i + 1 < args.size())
+            op_texts.push_back(args[++i]);
+        else if (args[i] == "--ops-file" && i + 1 < args.size())
+            ops_files.push_back(args[++i]);
+        else if (args[i] == "--tool" && i + 1 < args.size())
+            tool = args[++i];
+        else if (args[i] == "--no-sign")
+            sign = false;
         else
-            throw std::runtime_error("usage: ivc commit -m \"message\" [--edit \"<tool> <params>\"]...");
+            throw std::runtime_error(
+                "usage: ivc commit -m \"message\" [--op \"<operation>\"]... [--ops-file <file>] "
+                "[--tool \"<editor>\"] [--no-sign]");
     }
-    const std::string id = repo.commit(message, edits);
+
+    std::vector<Operation> ops;
+    for (const auto& t : op_texts) {
+        try {
+            Operation op = parse_operation(t);
+            op.tool = tool;
+            ops.push_back(op);
+        } catch (const std::invalid_argument& e) {
+            throw std::runtime_error(std::string("--op \"") + t + "\": " + e.what());
+        }
+    }
+    for (const auto& f : ops_files)
+        for (Operation& op : read_ops_file(f, tool)) ops.push_back(op);
+    // file= is written relative to where you are; the repository wants it from its root.
+    for (Operation& op : ops)
+        if (!op.file.empty()) op.file = repo.to_repo_path(op.file);
+
+    std::optional<SigningKey> key;
+    if (sign) key = load_signing_key();
+
+    const std::string id = repo.commit(message, ops, key ? &*key : nullptr);
     const Commit c = repo.read_commit(id);
     const auto branch = repo.current_branch();
     std::cout << '[' << (branch ? *branch : "detached") << ' ' << short_id(id) << "] "
-              << c.message << '\n';
+              << c.message << (c.signature.empty() ? "  (not signed)" : "  (signed)") << '\n';
+    for (const Operation& op : c.operations) print_operation(op);
     for (const Change& ch : c.changes) print_change_summary(ch);
     return 0;
 }
@@ -182,6 +271,7 @@ int cmd_log(Repository& repo, const std::vector<std::string>& args) {
         const Commit c = repo.read_commit(id);
         print_commit_header(repo, c, lab);
         for (const auto& e : c.edits) std::cout << "    edit  " << e << '\n';
+        for (const Operation& op : c.operations) print_operation(op);
         for (const Change& ch : c.changes) print_change_summary(ch);
         std::cout << '\n';
     }
@@ -196,6 +286,20 @@ int cmd_show(Repository& repo, const std::vector<std::string>& args) {
     if (!c.edits.empty()) {
         std::cout << "\nEdits recorded by the editor:\n";
         for (const auto& e : c.edits) std::cout << "    " << e << '\n';
+    }
+    if (!c.operations.empty()) {
+        std::cout << "\nDeclared operations:\n";
+        for (const Operation& op : c.operations) {
+            std::cout << "    " << op.canonical() << "   file " << op.file << '\n';
+            if (!op.tool.empty()) std::cout << "        tool " << op.tool << '\n';
+            if (const ActionSpec* spec = find_action(op.action)) {
+                if (!spec->c2pa.empty()) std::cout << "        c2pa " << spec->c2pa << '\n';
+                std::cout << "        " << (spec->replayable ? "replayable" : "declared only") << '\n';
+            } else {
+                std::cout << "        unknown action, declared only\n";
+            }
+            std::cout << "        id " << op.id() << '\n';
+        }
     }
     std::cout << "\nChanges:\n";
     for (const Change& ch : c.changes) {
@@ -329,6 +433,104 @@ int cmd_restore(Repository& repo, const std::vector<std::string>& args) {
     return 0;
 }
 
+int cmd_operations() {
+    std::cout << "Known operations (others are allowed and recorded as declared only):\n\n";
+    for (const ActionSpec& a : known_actions()) {
+        std::cout << "  " << a.name << (a.replayable ? "   [replayable]" : "   [declared only]");
+        if (!a.c2pa.empty()) std::cout << "   " << a.c2pa;
+        std::cout << "\n      " << a.help << "\n";
+    }
+    std::cout << "\nAny operation may add region=x,y,width,height to say where it acted.\n";
+    return 0;
+}
+
+int cmd_verify(Repository& repo, const std::vector<std::string>& args) {
+    bool strict = false;
+    std::string rev = "HEAD";
+    for (const auto& a : args) {
+        if (a == "--strict") strict = true;
+        else rev = a;
+    }
+    auto reports = repo.verify(rev);
+    if (strict) {
+        // Unsigned or untrusted commits count as problems: otherwise someone
+        // rewriting history could simply drop the signatures.
+        for (CommitReport& r : reports) {
+            std::vector<std::string> kept;
+            for (const auto& w : r.warnings) {
+                if (w == "not signed" || w.rfind("validly signed by", 0) == 0)
+                    r.problems.push_back(w + " (--strict)");
+                else
+                    kept.push_back(w);
+            }
+            r.warnings = kept;
+        }
+    }
+    if (reports.empty()) {
+        std::cout << "No commits yet.\n";
+        return 0;
+    }
+    int problems = 0, warnings = 0;
+    for (const CommitReport& r : reports) {
+        std::string message;
+        try {
+            message = repo.read_commit(r.id).message;
+        } catch (const std::exception&) {
+        }
+        const char* mark = !r.problems.empty() ? "FAIL" : !r.warnings.empty() ? "warn" : " ok ";
+        std::cout << "[" << mark << "] " << short_id(r.id) << "  " << message << '\n';
+        for (const auto& p : r.problems) std::cout << "         PROBLEM  " << p << '\n';
+        for (const auto& w : r.warnings) std::cout << "         warning  " << w << '\n';
+        for (const auto& n : r.notes) std::cout << "         ok       " << n << '\n';
+        problems += static_cast<int>(r.problems.size());
+        warnings += static_cast<int>(r.warnings.size());
+    }
+    std::cout << '\n' << reports.size() << " commit(s) checked: " << problems << " problem(s), "
+              << warnings << " warning(s)\n";
+    return problems > 0 ? 1 : 0;
+}
+
+int cmd_key(const std::vector<std::string>& args) {
+    if (!args.empty() && args[0] == "generate") {
+        if (args.size() < 2) throw std::runtime_error("usage: ivc key generate \"<your name>\" [--force]");
+        const bool force = args.size() > 2 && args[2] == "--force";
+        const SigningKey k = generate_signing_key(args[1], force);
+        std::cout << "Created a signing key for " << k.name << "\n  private key: "
+                  << (key_directory() / "signing_key").string()
+                  << "   (keep it secret, never commit it)\n  public key:  " << k.public_hex()
+                  << "\nYour commits are now signed. In each repository, run 'ivc trust --me'\n"
+                  << "and give the public key to anyone who should verify your work.\n";
+        return 0;
+    }
+    if (!args.empty() && args[0] == "show") {
+        const auto k = load_signing_key();
+        if (!k) throw std::runtime_error("no signing key yet (ivc key generate \"<your name>\")");
+        std::cout << k->public_hex() << "  " << k->name << '\n';
+        return 0;
+    }
+    throw std::runtime_error("usage: ivc key generate \"<name>\" | ivc key show");
+}
+
+int cmd_trust(Repository& repo, const std::vector<std::string>& args) {
+    if (args.empty()) {
+        const auto keys = repo.trusted_keys();
+        if (keys.empty()) std::cout << "No trusted keys in this repository.\n";
+        for (const auto& [k, n] : keys) std::cout << k << "  " << n << '\n';
+        return 0;
+    }
+    if (args[0] == "--me") {
+        const auto k = load_signing_key();
+        if (!k) throw std::runtime_error("no signing key yet (ivc key generate \"<your name>\")");
+        repo.trust_key(k->public_hex(), k->name);
+        std::cout << "Trusting " << k->name << " (" << k->public_hex().substr(0, 16) << "...)\n";
+        return 0;
+    }
+    if (args.size() != 2) throw std::runtime_error("usage: ivc trust <public-key> \"<name>\"");
+    repo.trust_key(args[0], args[1]);
+    std::cout << "Trusting " << args[1] << '\n';
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -342,6 +544,8 @@ int main(int argc, char** argv) {
 
     try {
         if (cmd == "init") return cmd_init(args);
+        if (cmd == "key") return cmd_key(args);
+        if (cmd == "operations") return cmd_operations();
 
         Repository repo = Repository::open();
         if (cmd == "add") return cmd_add(repo, args);
@@ -354,6 +558,8 @@ int main(int argc, char** argv) {
         if (cmd == "checkout") return cmd_checkout(repo, args);
         if (cmd == "branch") return cmd_branch(repo, args);
         if (cmd == "restore") return cmd_restore(repo, args);
+        if (cmd == "verify") return cmd_verify(repo, args);
+        if (cmd == "trust") return cmd_trust(repo, args);
 
         std::cerr << "ivc: unknown command '" << cmd << "' (see 'ivc help')\n";
         return 1;

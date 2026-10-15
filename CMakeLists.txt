@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(image_version_control CXX)
+project(image_version_control C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,13 @@ endif()
 add_library(ivc_stb src/stb_impl.cpp)
 target_include_directories(ivc_stb PUBLIC third_party)
 
+# Monocypher (audited, public domain): Ed25519 signatures for commits.
+add_library(ivc_crypto
+  third_party/monocypher/monocypher.c
+  third_party/monocypher/monocypher-ed25519.c
+)
+target_include_directories(ivc_crypto PUBLIC third_party/monocypher)
+
 # Core library: image loading, hashing and comparison, shared by every tool.
 add_library(ivc_core
   src/image.cpp
@@ -31,9 +38,11 @@ add_library(ivc_core
   src/ssim.cpp
   src/diff.cpp
   src/repository.cpp
+  src/operations.cpp
+  src/signing.cpp
 )
 target_include_directories(ivc_core PUBLIC src)
-target_link_libraries(ivc_core PUBLIC ivc_stb)
+target_link_libraries(ivc_core PUBLIC ivc_stb ivc_crypto)
 target_compile_options(ivc_core PRIVATE ${IVC_WARNINGS})
 
 # Command-line tools. ivc is the version control; the others are for
@@ -87,3 +96,15 @@ target_compile_definitions(test_repository PRIVATE
   SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples"
   BINARY_DIR="${CMAKE_BINARY_DIR}")
 add_test(NAME repository COMMAND test_repository)
+
+add_executable(test_operations tests/test_operations.cpp)
+target_link_libraries(test_operations PRIVATE ivc_core)
+target_compile_options(test_operations PRIVATE ${IVC_WARNINGS})
+target_compile_definitions(test_operations PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
+add_test(NAME operations COMMAND test_operations)
+
+add_executable(test_signing tests/test_signing.cpp)
+target_link_libraries(test_signing PRIVATE ivc_core)
+target_compile_options(test_signing PRIVATE ${IVC_WARNINGS})
+target_compile_definitions(test_signing PRIVATE BINARY_DIR="${CMAKE_BINARY_DIR}")
+add_test(NAME signing COMMAND test_signing)
