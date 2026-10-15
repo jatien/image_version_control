@@ -65,10 +65,14 @@ static void ssim_values() {
     check(std::fabs(j.mean - 0.799600) < 2e-3, "00 vs 06, mean of map = 0.7996");
     check(std::fabs(j.map.at(0, 0) - 0.786762) < 2e-3, "00 vs 06, corner (0,0) = 0.7868");
     check(std::fabs(j.map.at(100, 100) - 0.833628) < 2e-3, "00 vs 06, (100,100) = 0.8336");
+    check(std::fabs(j.interior_mean - 0.799464) < 2e-3,
+          "00 vs 06, interior mean = skimage's score 0.7995");
 
     const SsimMap e = ssim(channel_plane(a, 0), channel_plane(sample("03_small_region_edit.png"), 0));
     check(std::fabs(e.map.at(168, 170) - 0.229047) < 2e-3, "00 vs 03, inside window = 0.2290");
     check(std::fabs(e.map.at(100, 100) - 1.0) < 1e-4, "00 vs 03, far from window = 1");
+    check(std::fabs(e.interior_mean - 0.992962) < 2e-3,
+          "00 vs 03, interior mean = skimage's score 0.9930");
 }
 
 static bool inside(const Box& outer, const Box& inner) {

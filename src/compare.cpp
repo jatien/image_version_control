@@ -1,7 +1,8 @@
 #include "compare.hpp"
 
+#include "gray.hpp"
 #include "image_hash.hpp"
-#include "similarity_hash.hpp"
+#include "ssim.hpp"
 
 const char* verdict_name(Verdict v) {
     switch (v) {
@@ -12,34 +13,34 @@ const char* verdict_name(Verdict v) {
     return "?";
 }
 
+static GrayImage thumbnail(const Image& img) {
+    return resize_area(to_gray(img), kThumbnailSize, kThumbnailSize);
+}
+
 Comparison compare_images(const Image& reference, const Image& image) {
     Comparison result;
-    const TileGrid ref_tiles = compute_tiles(reference);
 
     if (exact_hash(reference) == exact_hash(image)) {
         result.verdict = Verdict::Identical;
-        result.tiles = compare_tiles(ref_tiles, ref_tiles);
+        result.similarity = 1.0;
         return result;
     }
 
-    // Turn the image back in every possible way; keep the one whose pHash is
-    // closest to the reference. Identity is tried first, so it wins ties.
-    const uint64_t ref_p = phash(reference);
-    Image best = image;
-    result.phash_distance = 65;
+    // Turn the image back in every possible way; keep the one whose
+    // thumbnail is most similar to the reference's. Identity is tried first,
+    // so it wins ties.
+    const GrayImage ref_thumb = thumbnail(reference);
+    result.similarity = -2.0;
     for (Orientation undo : kAllOrientations) {
-        Image turned = apply_orientation(image, undo);
-        const int d = hamming_distance(ref_p, phash(turned));
-        if (d < result.phash_distance) {
-            result.phash_distance = d;
+        const double s =
+            ssim(ref_thumb, thumbnail(apply_orientation(image, undo))).interior_mean;
+        if (s > result.similarity) {
+            result.similarity = s;
             result.orientation = inverse(undo);
-            best = std::move(turned);
         }
     }
 
-    result.dhash_distance = hamming_distance(dhash(reference), dhash(best));
-    result.tiles = compare_tiles(ref_tiles, compute_tiles(best));
-    result.verdict = result.phash_distance <= kSimilarThreshold ? Verdict::Similar
-                                                                : Verdict::Different;
+    result.verdict = result.similarity >= kSimilarThreshold ? Verdict::Similar
+                                                            : Verdict::Different;
     return result;
 }

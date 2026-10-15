@@ -1,7 +1,7 @@
 #pragma once
 
 #include "image.hpp"
-#include "similarity_hash.hpp"  // GrayImage
+#include "gray.hpp"
 
 // SSIM, the structural similarity index (Wang, Bovik, Sheikh, Simoncelli,
 // "Image quality assessment: from error visibility to structural
@@ -25,7 +25,12 @@
 
 struct SsimMap {
     GrayImage map;      // SSIM at every pixel
-    double mean = 1.0;  // average over the image ("the" SSIM score)
+    double mean = 1.0;  // average over the whole map
+    // Average over the interior only, leaving out a border as wide as the
+    // Gaussian window's radius (5 pixels for sigma 1.5), where the window
+    // hangs off the image. This is "the" SSIM score as scikit-image reports
+    // it. Equal to `mean` when the image is too small to have an interior.
+    double interior_mean = 1.0;
 };
 
 // SSIM of two single-channel images of the same size.

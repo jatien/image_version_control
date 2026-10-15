@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "similarity_hash.hpp"  // GrayImage
+#include "gray.hpp"
 
 // 2D convolution with a separable kernel: k(i, j) = kx(i) * ky(j).
 //

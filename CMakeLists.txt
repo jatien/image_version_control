@@ -24,9 +24,8 @@ add_library(ivc_core
   src/image.cpp
   src/sha256.cpp
   src/image_hash.cpp
-  src/similarity_hash.cpp
+  src/gray.cpp
   src/orientation.cpp
-  src/tile_hash.cpp
   src/compare.cpp
   src/convolution.cpp
   src/ssim.cpp
@@ -60,12 +59,6 @@ target_link_libraries(test_hash PRIVATE ivc_core)
 target_compile_options(test_hash PRIVATE ${IVC_WARNINGS})
 target_compile_definitions(test_hash PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
 add_test(NAME hash COMMAND test_hash)
-
-add_executable(test_similarity tests/test_similarity.cpp)
-target_link_libraries(test_similarity PRIVATE ivc_core)
-target_compile_options(test_similarity PRIVATE ${IVC_WARNINGS})
-target_compile_definitions(test_similarity PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
-add_test(NAME similarity COMMAND test_similarity)
 
 add_executable(test_compare tests/test_compare.cpp)
 target_link_libraries(test_compare PRIVATE ivc_core)
