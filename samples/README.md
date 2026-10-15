@@ -18,22 +18,32 @@ recompression.
 
 ## Expected results
 
-| File | Edit | Pixels changed | Exact hash | Similarity hash |
-|---|---|---|---|---|
-| `00_original.png` | reference | — | — | — |
-| `01_identical_pixels.png` | extra metadata only | 0 | **same** | same |
-| `02_one_pixel.png` | one channel of one pixel +1 | 1 | different | same |
-| `03_small_region_edit.png` | 16×16 window painted over (like AI inpainting) | 256 | different | same or very close |
-| `04_brightness_plus5.png` | whole image +5 brightness | all | different | same or very close |
-| `05_resized_half.png` | 128×128 | all (new size) | different | close |
-| `06_recompressed_q85.jpg` | JPEG, quality 85 | almost all | different | close |
-| `07_cropped_5pct.png` | 5% cut from each side | all (new size) | different | close-ish (hard case) |
-| `08_mirrored.png` | horizontal flip | almost all | different | far (most hashes are not mirror-invariant) |
-| `09_unrelated.png` | different scene | almost all | different | far |
+`similarity` and `verdict` come from `ivc_compare samples/00_original.png
+<file>` (SSIM of 32×32 thumbnails in the best of the 8 orientations;
+SIMILAR at ≥ 0.70). `exact` and `visible` come from `ivc_diff`.
 
-`01` is the key check for the exact hash: the **file** bytes differ
-(different SHA-256 of the file), but the **pixels** are identical, so the
-pixel hash must match.
+| File | Edit | Similarity | Verdict | Exact (pixels changed) | Visible changes |
+|---|---|---|---|---|---|
+| `00_original.png` | reference | — | — | — | — |
+| `01_identical_pixels.png` | extra metadata only | 1.000 | **IDENTICAL** | 0 | none |
+| `02_one_pixel.png` | one channel of one pixel +1 | 1.000 | SIMILAR | **1**, at (100,100) | none |
+| `03_small_region_edit.png` | 16×16 window painted over (like AI inpainting) | 0.996 | SIMILAR | **256**, box 164–179 × 160–175 | **1 region**, around the window |
+| `04_brightness_plus5.png` | whole image +5 brightness | 0.999 | SIMILAR | all | none |
+| `05_resized_half.png` | 128×128 | 0.999 | SIMILAR | (sizes differ) | none |
+| `06_recompressed_q85.jpg` | JPEG, quality 85 | 0.999 | SIMILAR | almost all | none |
+| `07_cropped_5pct.png` | 5% cut from each side | 0.851 | SIMILAR | (sizes differ) | many — needs alignment |
+| `08_mirrored.png` | horizontal flip | 1.000 | SIMILAR (mirrored left-right) | 0 after turning back | none |
+| `09_unrelated.png` | different scene | 0.519 | DIFFERENT | — | — |
+| `10_rotated_90.png` | 90° counter-clockwise | 1.000 | SIMILAR (rotated 90) | 0 after turning back | none |
+| `11_rotated_5deg.png` | 5°, black corners | 0.868 | SIMILAR | almost all | many — needs alignment |
 
-`03` is the key check for tile hashes: only the tiles covering the window
-(around x 164–180, y 160–176) should change.
+`01` is the key check for the ID: the **file** bytes differ (different
+SHA-256 of the file), but the **pixels** are identical, so the pixel hash
+must match.
+
+`02` and `03` are the key checks for differences: the exact comparison
+locates even a single changed pixel, and the window edit is the only
+visible change.
+
+`07` and `11` are recognised as versions but are not aligned with the
+original, so their difference maps are not meaningful yet.
