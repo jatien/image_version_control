@@ -94,6 +94,13 @@ def main() -> None:
     save(scene(2, 190, (30, 30, 70), (230, 120, 70), (120, 90, 50)),
          "09_unrelated.png")
 
+    # 10: rotated 90 degrees counter-clockwise (exact, no pixels lost).
+    save(np.rot90(original).copy(), "10_rotated_90.png")
+
+    # 11: rotated 5 degrees, same size; corners filled with black.
+    Image.fromarray(original).rotate(5, resample=Image.BICUBIC) \
+        .save(OUT / "11_rotated_5deg.png")
+
     print(f"Wrote samples to {OUT}")
 
 

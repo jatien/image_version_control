@@ -22,8 +22,11 @@ ctest --test-dir build --output-on-failure   # run the tests
 # Exact hash of each image's pixels
 ./build/ivc_hash samples/*.png samples/*.jpg
 
-# Compare images with a reference: Hamming distances and a verdict
+# Compare images with a reference: distances, changed tiles and a verdict
 ./build/ivc_compare samples/00_original.png samples/*.png samples/*.jpg
+
+# Same, drawing the 8x8 tile map (. unchanged, ~ noise only, X changed)
+./build/ivc_compare --map samples/00_original.png samples/03_small_region_edit.png
 ```
 
 ## Hashes
@@ -41,5 +44,15 @@ ctest --test-dir build --output-on-failure   # run the tests
 
   These are not unique and can be fooled on purpose. They answer "is this
   probably a version of that?"; the exact hash answers "is it the same?".
+- **Orientations** (`src/orientation.hpp`): the comparison tries the image in
+  all 8 rotations by 90° and mirrorings, so rotated or mirrored versions are
+  recognised. Arbitrary angles are not handled yet.
+- **Tile hashes** (`src/tile_hash.hpp`): an 8×8 grid that scales with the
+  image. Each tile has an exact 64-bit hash (any pixel changed?) and a 4×4
+  brightness thumbnail (visibly changed?), so a comparison shows *where* an
+  image was edited. `ivc_compare --map` draws the grid.
+- **`compare_images`** (`src/compare.hpp`) combines them: exact hash, then
+  pHash in the best orientation, then tiles. All hashes are pure functions;
+  the version tracker will be a separate layer that calls them.
 
 Test images and their expected results are in [`samples/`](samples/README.md).

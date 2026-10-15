@@ -18,22 +18,33 @@ recompression.
 
 ## Expected results
 
-| File | Edit | Pixels changed | Exact hash | Similarity hash |
-|---|---|---|---|---|
-| `00_original.png` | reference | — | — | — |
-| `01_identical_pixels.png` | extra metadata only | 0 | **same** | same |
-| `02_one_pixel.png` | one channel of one pixel +1 | 1 | different | same |
-| `03_small_region_edit.png` | 16×16 window painted over (like AI inpainting) | 256 | different | same or very close |
-| `04_brightness_plus5.png` | whole image +5 brightness | all | different | same or very close |
-| `05_resized_half.png` | 128×128 | all (new size) | different | close |
-| `06_recompressed_q85.jpg` | JPEG, quality 85 | almost all | different | close |
-| `07_cropped_5pct.png` | 5% cut from each side | all (new size) | different | close-ish (hard case) |
-| `08_mirrored.png` | horizontal flip | almost all | different | far (most hashes are not mirror-invariant) |
-| `09_unrelated.png` | different scene | almost all | different | far |
+Results of `ivc_compare samples/00_original.png <file>`. pHash is the
+Hamming distance after turning the image back to the best of the 8
+orientations; tiles is how many of the 8×8 tiles visibly changed.
+
+| File | Edit | Pixels changed | pHash | Tiles changed | Verdict |
+|---|---|---|---|---|---|
+| `00_original.png` | reference | — | — | — | — |
+| `01_identical_pixels.png` | extra metadata only | 0 | 0 | 0 | **IDENTICAL** |
+| `02_one_pixel.png` | one channel of one pixel +1 | 1 | 0 | 0 (one tile `~`) | SIMILAR |
+| `03_small_region_edit.png` | 16×16 window painted over (like AI inpainting) | 256 | 2 | **1**, at (5,5) | SIMILAR |
+| `04_brightness_plus5.png` | whole image +5 brightness | all | 0 | 0 | SIMILAR |
+| `05_resized_half.png` | 128×128 | all (new size) | 0 | 0 | SIMILAR |
+| `06_recompressed_q85.jpg` | JPEG, quality 85 | almost all | 0 | 0 | SIMILAR |
+| `07_cropped_5pct.png` | 5% cut from each side | all (new size) | 8 | 40 | SIMILAR |
+| `08_mirrored.png` | horizontal flip | almost all | 0 | 0 | SIMILAR (mirrored left-right) |
+| `09_unrelated.png` | different scene | almost all | 16 | 64 | DIFFERENT |
+| `10_rotated_90.png` | 90° counter-clockwise | all (size swapped) | 0 | 0 | SIMILAR (rotated 90) |
+| `11_rotated_5deg.png` | 5°, black corners | almost all | 12 | 57 | DIFFERENT — **known limitation** |
 
 `01` is the key check for the exact hash: the **file** bytes differ
 (different SHA-256 of the file), but the **pixels** are identical, so the
 pixel hash must match.
 
-`03` is the key check for tile hashes: only the tiles covering the window
-(around x 164–180, y 160–176) should change.
+`02` and `03` are the key checks for tile hashes: the exact tile hashes
+locate even a single changed pixel, and the window edit is flagged in
+exactly one tile.
+
+`07` shows the limit of tiles: a crop shifts every tile's content, so the
+grid no longer lines up. `11` shows the limit of the orientation search:
+only the 8 exact rotations and flips are tried, not arbitrary angles.

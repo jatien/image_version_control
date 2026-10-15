@@ -21,6 +21,9 @@ add_library(ivc_core
   src/sha256.cpp
   src/image_hash.cpp
   src/similarity_hash.cpp
+  src/orientation.cpp
+  src/tile_hash.cpp
+  src/compare.cpp
 )
 target_include_directories(ivc_core PUBLIC src third_party)
 target_compile_options(ivc_core PRIVATE ${IVC_WARNINGS})
@@ -51,3 +54,9 @@ target_link_libraries(test_similarity PRIVATE ivc_core)
 target_compile_options(test_similarity PRIVATE ${IVC_WARNINGS})
 target_compile_definitions(test_similarity PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
 add_test(NAME similarity COMMAND test_similarity)
+
+add_executable(test_compare tests/test_compare.cpp)
+target_link_libraries(test_compare PRIVATE ivc_core)
+target_compile_options(test_compare PRIVATE ${IVC_WARNINGS})
+target_compile_definitions(test_compare PRIVATE SAMPLES_DIR="${CMAKE_SOURCE_DIR}/samples")
+add_test(NAME compare COMMAND test_compare)
