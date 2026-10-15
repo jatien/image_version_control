@@ -1,4 +1,4 @@
-// Tests for orientations, tile hashes and the full comparison.
+// Tests for orientations and the SSIM-based comparison.
 // Run with:   ctest --test-dir build --output-on-failure
 
 #include <iostream>
@@ -8,7 +8,6 @@
 #include "image.hpp"
 #include "image_hash.hpp"
 #include "orientation.hpp"
-#include "tile_hash.hpp"
 
 static int failures = 0;
 
@@ -19,12 +18,6 @@ static void check(bool ok, const std::string& what) {
 
 static const std::string dir = SAMPLES_DIR;
 static Image sample(const std::string& f) { return load_image(dir + "/" + f); }
-
-static int count_state(const TileComparison& t, TileState s) {
-    int n = 0;
-    for (TileState x : t.state) n += x == s;
-    return n;
-}
 
 static void orientations() {
     std::cout << "Orientations\n";
@@ -58,73 +51,51 @@ static void orientations() {
           "flipH of 00 has exactly the pixels of 08_mirrored");
 }
 
-static void tiles() {
-    std::cout << "Tile hashes\n";
-    const TileGrid g0 = compute_tiles(sample("00_original.png"));
-    check(g0.cols == 8 && g0.rows == 8 && g0.tiles.size() == 64, "8x8 grid");
-
-    const TileComparison same = compare_tiles(g0, g0);
-    check(count_state(same, TileState::Unchanged) == 64, "image vs itself: all unchanged");
-
-    // 02: one pixel at (100, 100) -> tile column 3, row 3 (32 px per tile).
-    const TileComparison one = compare_tiles(g0, compute_tiles(sample("02_one_pixel.png")));
-    check(count_state(one, TileState::Unchanged) == 63 && one.state[3 * 8 + 3] == TileState::Noise,
-          "02 one pixel: exactly tile (3,3) differs, as noise");
-
-    // 03: window at x 164-180, y 160-176 -> tile column 5, row 5.
-    const TileComparison edit = compare_tiles(g0, compute_tiles(sample("03_small_region_edit.png")));
-    check(edit.changed == 1 && edit.state[5 * 8 + 5] == TileState::Changed,
-          "03 window edit: exactly tile (5,5) changed");
-
-    for (const char* f : {"04_brightness_plus5.png", "05_resized_half.png",
-                          "06_recompressed_q85.jpg"}) {
-        const TileComparison t = compare_tiles(g0, compute_tiles(sample(f)));
-        check(t.changed == 0, std::string(f) + ": no tile visibly changed");
-    }
-
-    const TileComparison other = compare_tiles(g0, compute_tiles(sample("09_unrelated.png")));
-    check(other.changed == 64, "09 unrelated: all 64 tiles changed");
+static std::string score(double s) {
+    std::string t = std::to_string(s);
+    return t.substr(0, t.find('.') + 4);
 }
 
-static void full_comparison() {
-    std::cout << "compare_images on samples/\n";
+static void comparisons() {
+    std::cout << "compare_images on samples/ (threshold "
+              << score(kSimilarThreshold) << ")\n";
     const Image ref = sample("00_original.png");
-
     auto cmp = [&](const std::string& f) { return compare_images(ref, sample(f)); };
 
-    check(cmp("01_identical_pixels.png").verdict == Verdict::Identical, "01 -> IDENTICAL");
+    const Comparison same = cmp("01_identical_pixels.png");
+    check(same.verdict == Verdict::Identical && same.similarity == 1.0, "01 -> IDENTICAL");
 
+    // Every real version must be SIMILAR, not turned, with a clear margin.
     for (const char* f : {"02_one_pixel.png", "03_small_region_edit.png",
                           "04_brightness_plus5.png", "05_resized_half.png",
-                          "06_recompressed_q85.jpg", "07_cropped_5pct.png"}) {
+                          "06_recompressed_q85.jpg", "07_cropped_5pct.png",
+                          "11_rotated_5deg.png"}) {
         const Comparison c = cmp(f);
-        check(c.verdict == Verdict::Similar && c.orientation == Orientation::Identity,
-              std::string(f) + " -> SIMILAR, not turned (pHash " +
-                  std::to_string(c.phash_distance) + ")");
+        check(c.verdict == Verdict::Similar && c.orientation == Orientation::Identity &&
+                  c.similarity >= 0.80,
+              std::string(f) + " -> SIMILAR, not turned (similarity " + score(c.similarity) +
+                  " >= 0.80)");
     }
 
     const Comparison m = cmp("08_mirrored.png");
     check(m.verdict == Verdict::Similar && m.orientation == Orientation::FlipH &&
-              m.phash_distance == 0 && m.tiles.changed == 0,
-          "08 -> SIMILAR, mirrored left-right, no tile changed");
+              m.similarity > 0.999,
+          "08 -> SIMILAR, mirrored left-right");
 
     const Comparison r = cmp("10_rotated_90.png");
     check(r.verdict == Verdict::Similar && r.orientation == Orientation::Rot90 &&
-              r.phash_distance == 0 && r.tiles.changed == 0,
-          "10 -> SIMILAR, rotated 90, no tile changed");
+              r.similarity > 0.999,
+          "10 -> SIMILAR, rotated 90");
 
-    check(cmp("09_unrelated.png").verdict == Verdict::Different, "09 unrelated -> DIFFERENT");
-
-    // Known limitation, documented in samples/README.md: arbitrary angles
-    // are not handled yet. This records the current behaviour.
-    check(cmp("11_rotated_5deg.png").verdict == Verdict::Different,
-          "11 rotated 5 degrees -> DIFFERENT (known limitation)");
+    const Comparison u = cmp("09_unrelated.png");
+    check(u.verdict == Verdict::Different && u.similarity <= 0.60,
+          "09 unrelated -> DIFFERENT (similarity " + score(u.similarity) +
+              " <= 0.60 in its best orientation)");
 }
 
 int main() {
     orientations();
-    tiles();
-    full_comparison();
+    comparisons();
 
     if (failures == 0) {
         std::cout << "\nAll tests passed.\n";

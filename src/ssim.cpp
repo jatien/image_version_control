@@ -43,6 +43,17 @@ SsimMap ssim(const GrayImage& x, const GrayImage& y, float sigma, double data_ra
         total += s;
     }
     result.mean = total / x.values.size();
+
+    const int border = static_cast<int>(gaussian_kernel(sigma).size() / 2);
+    if (x.width > 2 * border && x.height > 2 * border) {
+        double inner = 0;
+        for (int yy = border; yy < x.height - border; ++yy)
+            for (int xx = border; xx < x.width - border; ++xx) inner += result.map.at(xx, yy);
+        result.interior_mean =
+            inner / (static_cast<double>(x.width - 2 * border) * (x.height - 2 * border));
+    } else {
+        result.interior_mean = result.mean;
+    }
     return result;
 }
 

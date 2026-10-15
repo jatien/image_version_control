@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
         std::cout << "verdict    " << verdict_name(c.verdict);
         if (c.verdict == Verdict::Similar && c.orientation != Orientation::Identity)
             std::cout << " (" << orientation_name(c.orientation) << ")";
-        std::cout << "   pHash distance " << c.phash_distance << "/64\n";
+        std::cout << "   similarity " << std::fixed << std::setprecision(3) << c.similarity << '\n';
 
         if (c.verdict == Verdict::Identical) {
             std::cout << "\nSame pixels: no differences.\n";

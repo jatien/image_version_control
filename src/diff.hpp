@@ -6,7 +6,7 @@
 #include "compare.hpp"
 #include "image.hpp"
 #include "sha256.hpp"
-#include "similarity_hash.hpp"
+#include "gray.hpp"
 
 // Image difference: WHERE two versions of an image differ.
 //
@@ -37,7 +37,7 @@ struct Region {
 struct ImageDiff {
     Sha256::Digest reference_id{};
     Sha256::Digest image_id{};
-    Comparison comparison;    // verdict, orientation, pHash distance, tiles
+    Comparison comparison;    // verdict, orientation, similarity score
 
     // Exact differences (only when the aligned image has the reference's size).
     bool exact_available = false;
