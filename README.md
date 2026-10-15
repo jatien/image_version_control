@@ -12,7 +12,99 @@ cmake --build build        # compile
 ctest --test-dir build --output-on-failure   # run the tests
 ```
 
-## Tools
+## Version control: `ivc`
+
+`ivc` works like git, on a folder of images. Add `build/` to your `PATH`
+(or call `./build/ivc`):
+
+```bash
+cd my-photos
+ivc init                                  # create the repository (.ivc/)
+ivc add .                                 # stage every image in the folder
+ivc commit -m "First version"
+
+# ...edit photo.png in any editor...
+ivc status                                # modified  photo.png
+ivc diff photo.png -o diff.png            # what changed, and where
+ivc add photo.png
+ivc commit -m "Remove the window" --edit "brush x=164 y=160 w=16 h=16"
+
+ivc log                                   # history, newest first
+ivc show HEAD~1                           # one commit in full
+
+ivc checkout HEAD~1                       # go back to the previous version
+ivc checkout main                         # and forward again
+ivc checkout -b black-white               # start a branch from here
+ivc branch                                # list branches
+ivc restore photo.png --from HEAD~2       # bring back one file
+```
+
+`ivc help` lists every command. A revision is a branch name, a commit ID or
+its first 4+ characters, `HEAD` (the current commit), or `<revision>~<n>`
+for *n* commits back.
+
+Example `ivc log` entry, for a photo rotated in an editor:
+
+```
+commit 76573e3d (HEAD -> main)
+author  Javi
+date    2026-10-15T21:35:35Z
+
+    Rotate
+
+    edit  rotate 90
+    modified  photo.png   (similarity 1.000, detected rotated 90, pixels 0 changed, visible 0 region(s))
+```
+
+The change was *identified* as a pure rotation: after turning it back, not a
+single pixel differs.
+
+### What is stored
+
+Everything lives in `.ivc/` at the root of the folder:
+
+| Path | Content |
+|---|---|
+| `HEAD` | `ref: refs/heads/<branch>`, or a commit ID when looking at an older version |
+| `refs/heads/<branch>` | the latest commit of each branch |
+| `index` | the staging area: the files the next commit will contain |
+| `objects/files/<id>` | the original bytes of every version of every file, named by their SHA-256 |
+| `objects/commits/<id>` | the commits, as text, named by the SHA-256 of that text |
+
+Each file version has two IDs: the **file ID** (SHA-256 of its bytes), used
+to restore it exactly, and the **image ID** (SHA-256 of its pixels), its
+identity whatever the format or metadata. A commit is a readable text file:
+
+```
+ivc-commit 1
+parent 40bd5a83eecb60ca2a1256723891681073234b61aa49c602d65f65273feeaf29
+author Javi
+date 2026-10-15T21:35:35Z
+edit rotate 90
+file f656ef81…c182074e 47e2d2c8…7127c257 holidays/sunset.png
+file f2d31b4a…bfae5251 1ad8892e…2c6d2be8 photo.png
+change modified photo.png
+  similarity 1.000
+  detected rotated 90
+  pixels 0 changed
+  visible 0 region(s)
+
+Rotate
+```
+
+- `file <image id> <file id> <path>`: every file in this version.
+- `change <kind> <path>`: what happened, with kind `added`, `modified`,
+  `replaced` (no longer similar), `metadata` (same pixels, different bytes)
+  or `deleted`; the indented lines are what the comparison measured:
+  similarity, detected rotation, mirror or resize, changed pixels and regions.
+- `edit <tool key> <parameters>`: written by an editor (`--edit`) to record
+  which tool made the change. Unknown lines are ignored, so new fields can be
+  added later without breaking old repositories.
+
+Not yet: merging branches, and storing only the changed parts of an image
+(each version currently stores the full file).
+
+## Inspection tools
 
 ```bash
 # Pixel values of an image (summary, or every pixel as "x y R G B A")
@@ -83,7 +175,7 @@ Two tools, each doing one job:
     ≥ 0.85 and the unrelated image ≤ 0.52.
   - *Where does it differ?* `diff_images`, described above.
 
-All of these are pure functions (image in, result out, no state); the
-version tracker will be a separate layer that calls them.
+All of these are pure functions (image in, result out, no state); `ivc`
+(`src/repository.hpp`) is a separate layer that calls them.
 
 Test images and their expected results are in [`samples/`](samples/README.md).
